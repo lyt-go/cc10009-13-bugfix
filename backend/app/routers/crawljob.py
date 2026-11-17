@@ -15,7 +15,6 @@ service = CrawljobService()
 LIST_FIELDS = ["作业编号", "目标站点", "起始URL", "爬取深度", "URL去重策略", "页面解析器", "下载超时秒", "最大页面数"]
 STATUSES = ["草稿", "作业审批中", "执行中", "已完成", "已停止"]
 
-
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按作业编号检索"),
@@ -50,11 +49,30 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条作业定义执行提交作业审批、启动作业、停止作业；不允许的动作会被拦下并说明原因。"""
+    """对单条作业定义执行提交作业审批、启动作业、停止作业、DNS核对；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
+    if action == "DNS核对":
+        entry = service.get_entry(entry_id)
+        if entry is None:
+            return ActionResult(ok=False, message=f"作业定义 {entry_id} 不存在或已归档")
+        reason = str(payload.values.get("失败原因") or payload.values.get("reason") or "连接失败").strip()
+        entry, message = service.check_dns(entry, reason)
+        return ActionResult(ok=True, message=message, entry=entry)
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.post("/{entry_id}/dns-check", response_model=ActionResult)
+def dns_check(entry_id: int, payload: EntryPayload | None = None) -> ActionResult:
+    """采集执行侧读取DNS生效版本并解释连接失败，结果写回作业清单。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"作业定义 {entry_id} 不存在或已归档")
+    values = payload.values if payload is not None else {}
+    reason = str(values.get("失败原因") or values.get("reason") or "连接失败").strip()
+    entry, message = service.check_dns(entry, reason)
     return ActionResult(ok=True, message=message, entry=entry)
 
 
